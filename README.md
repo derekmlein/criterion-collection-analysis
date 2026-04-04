@@ -10,7 +10,7 @@ As an assistant editor with nearly a decade of experience in the film industry, 
 This project utilizes **R** for data engineering and **Tableau** for strategic visualization to identify "Expansion Potential"—directors and genres with high audience acclaim and market popularity which are currently underrepresented in the Criterion Collection.
 
 ## 📊 Interactive Dashboard
-[[Criterion Dashboard Screenshot]()](https://public.tableau.com/views/CriterionCollectionAnalysis_17753340053120/TheCriterionStandardAData-DrivenStrategyforCollectionExpansion?:language=en-US&:sid=&:redirect=auth&:display_count=n&:origin=viz_share_link))
+![Dashboard](images/Derek%20Lein%20Criterion%20Collection%20Analysis%20Tableau%20Dashboard.png)(https://public.tableau.com/views/CriterionCollectionAnalysis_17753340053120/TheCriterionStandardAData-DrivenStrategyforCollectionExpansion?:language=en-US&:sid=&:redirect=auth&:display_count=n&:origin=viz_share_link))
 *> Click the image above to view the interactive dashboard on Tableau Public.*
 
 ---
