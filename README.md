@@ -1,6 +1,6 @@
 # The Criterion Standard: A Data-Driven Strategy for Collection Expansion
 
-**By Derek Lein** [Portfolio](INSERT_YOUR_PORTFOLIO_URL_HERE) | [LinkedIn](https://www.linkedin.com/in/derek-lein-4171a6291/)
+**By Derek Lein** [Portfolio](https://dereklein.carrd.co/) | [LinkedIn](https://www.linkedin.com/in/derek-lein-4171a6291/)
 
 ---
 
