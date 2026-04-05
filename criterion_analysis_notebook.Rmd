@@ -1,0 +1,637 @@
+---
+title: "The Criterion Standard: A Data-Driven Strategy for Collection Expansion"
+author: "Derek Lein"
+date: "2026-03-30"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: cosmo
+    highlight: tango
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+# Load Libraries  
+library(tidyverse)
+library(janitor)
+library(usethis)
+library(httr2)
+library(ISOcodes)
+library(treemapify)
+library(knitr)
+library(kableExtra)
+library(patchwork)
+library(ggrepel)
+library(here)
+
+# Load Cleaned Dataset
+criterion <- read_csv(here("Outputs", "criterion_final.csv"),
+                      col_types = cols(
+                        spine = col_integer(),
+                        year = col_integer(),
+                        runtime_min = col_integer(),
+                        tmdb_vote_count = col_integer(),
+                        metascore = col_integer(),
+                        tmdb_id = col_integer()
+                      ))
+
+# Set Global Plot Theme
+theme_set(theme_minimal(base_size = 12))
+```
+
+# 1. INTRODUCTION
+
+Amongst cinephiles and physical media collectors, the Criterion Collection has become the definitive standard in world cinema, gaining a reputation for curatorial authority with every title inducted into its ranks. While new titles are inducted every month to maintain catalog vitality, the collection's growth to over 1,300 titles means many of the most obvious, high profile titles have already been exhausted. To identify high-value acquisition targets that balance popularity, audience acclaim, and scarcity, I built a unified, filtered dataset, and incorporated both this data and my near decade of experience in the film industry to provide a data-driven roadmap for future releases.
+
+## Key Strategic Questions
+
+- Finding The "Blind Spot": Which directors and genres show high audience scores, but low collection volume?
+
+- Assessing "Market Demand" Gap: Which directors and genres show high popularity scores, but low collection volume?
+
+- Priority Roadmap: Based on the "Expansion Potential" quadrant, as well as current licensing and availability, which specific titles should be prioritized for induction?
+
+# 2. PROCURING AND CLEANING THE DATA
+
+## Initial Cleaning
+
+Since up-to-date datasets for the Criterion Collection were unavailable on any public data repositories, such as Kaggle, I had to be more resourceful to find my data. I was able to locate a dataset on the film social media site Letterboxd that was thorough and completely up-to-date. While the site restricts public downloads of user created lists, I was able to use my "pro" account member access on Letterboxd to clone the list to my account and download that as a .csv file.
+  
+This initial file provided a comprehensive list of titles, though the formatting was non-uniform and the critical metadata, including Spine Number, Director, and Boxset if applicable—was nested within a single "Description" string. Furthermore, the dataset would need additional data points, such as an audience metrics, popularity value, and geographical data, for meaningful and significant analysis. 
+
+My primary cleaning phase focused on structural standardization and data extraction. Using Regex, I parsed the description strings to extract the distinct variables, transforming the unstructured text into standardized data values. Additionally, I generated a unique identification code for each title to assist with tracking, as the Spine Numbers are occasionally shared amongst multiple titles.
+
+```{r initial_cleaning, eval = FALSE, class.source = "fold-show"}
+# Initial Cleaning and Extraction
+criterion_cleaned <- criterion_raw %>% 
+  select(-"Position", -"URL") %>% 
+  clean_names() %>% 
+  rename(title = name) %>% 
+  mutate(
+    description = str_remove_all(description, "[•,#]|<i>|</i>"), 
+    description = str_replace_all(description, "Spine Number:", "Spine"), 
+    across(c(description, title), str_squish)) %>% 
+  mutate(
+    director = 
+      str_extract(description, "(?<=Directors?:\\s).*?(?=\\sSpine)"),
+    spine = 
+      as.integer(str_extract(description, "(?<=Spine:?\\s)\\d+")),
+    boxset = 
+      str_extract(description, "(?<=Collection:\\s).*?$")) %>% 
+  select(-"description") %>% 
+  mutate(boxset = replace_na(boxset, "Standalone")) %>% 
+  mutate(movie_id = title %>% 
+        str_to_lower() %>% 
+        str_replace_all("[[:punct:]]", "") %>% 
+        str_replace_all("\\s+", "-") %>% 
+        paste(year, sep = "-")) %>% 
+  mutate(year = as.integer(year)) %>% 
+  relocate("spine")
+```
+
+My secondary phase involved augmenting the base dataset with additional metrics from the TMDb and OMDb APIs. I implemented an iterative scraping script to retrieve data from OMDb and TMDb, match that resulting data up to my cleaned master dataset, and save a copy of those results. These additional metrics would include metascore, average audience ratings, number of votes, and language.
+  
+While validating the TMDb data, I detected three key areas requiring amending:
+  
+**Relational Language Mapping**: The API returned language values as ISO-639-2 codes (i.e., "en", "fr"); in order to expand these to more easily comprehensible values, I imported an external language look-up table, while manually amending it with three language values present in the TMDb dataset but not present in the look-up table: Cantonese, Serbo-Croatian, and None Spoken.
+  
+**Film History Logic Application**: The API inconsistently tagged the language values of silent films; I used my knowledge of film history to implement a conditional logic rule to standardize the language to "None Spoken" for every film released during the Silent Era (pre-1930), and then manually tagged the few silent titles released after 1930.
+  
+**Edge Case Resolution**: The API failed to locate on TMDb data for twelve titles, primarily the television titles present in the collection; as this number was relatively small, I addressed this by manually constructing a tibble with the missing values, ensuring a 100% record retention rate.
+  
+Following these adjustments, I then proceeded to update the TMDb data frame for those twelve titles, along with the silent films, and used a left join to merge the language look-up table. Finally, I performed a standard schema cleanup to prepare the TMDb dataset for the master integration.
+
+```{r tmdb_cleaning, eval = FALSE, class.source = "fold-show"}
+lang_lookup <- ISO_639_2 %>% 
+  select(Id = Alpha_2, language_full = Name) %>% 
+  filter(!is.na(Id)) %>% 
+  add_row(
+    Id = c("cn", "sh", "xx"), 
+    language_full = c("Cantonese", "Serbo-Croatian", "None Spoken")) %>% 
+  mutate(language_full = str_replace_all(language_full, "Chinese", "Mandarin"))
+    
+tmdb_silent_patch <- tmdb_raw %>% 
+  filter(year < 1930 | title %in% c(
+    "À propos de Nice", "People on Sunday", "Borderline", "Limite", 
+    "City Lights", "A Story of Floating Weeds", "Modern Times")) %>% 
+  mutate(language = "xx")
+    
+tmdb_missing_patch <- tribble(
+  ~title, ~year, ~tmdb_id, ~runtime_min, 
+  ~genre, ~country, ~language, ~popularity, ~vote_average, ~vote_count,
+  "The Underground Railroad", 2021, 80039, 585,
+  "Drama, Science Fiction", "United States of America", "en", 7.8445, 7.2, 145,
+  "Mangrove", 2020, 90705, 127,
+  "Drama", "United Kingdom", "en", 8.2423, 7.4, 48,
+  # ... [Truncated for readability]
+
+tmdb_cleaned <- tmdb_raw %>% 
+  rows_update(tmdb_silent_patch, by = c("title", "year")) %>% 
+  rows_update(tmdb_missing_patch, by = c("title", "year")) %>% 
+  mutate(
+    spine = as.integer(spine),
+    year = as.integer(year),
+    tmdb_id = as.integer(tmdb_id),
+    runtime_min = as.integer(runtime_min), 
+    vote_count = as.integer(vote_count)) %>% 
+  left_join(lang_lookup, by = c("language" = "Id")) %>% 
+  select(-language) %>% 
+  rename(
+    tmdb_vote_count = vote_count,
+    tmdb_vote_avg = vote_average,
+    tmdb_popularity = popularity,
+    language = language_full) %>% 
+  relocate(language, .after = "country")
+```
+
+A parallel process was applied to the OMDb dataset to validate and ensure complete, consistent metrics. To streamline the process, I utilized the previously cleaned TMDb dataset to resolve records where the OMDb API initially retrieved null values. For these null values, I extracted their TMDb id, converted that to its corresponding IMDb id value, and then utilized a targeted iterative scraping script using that value to recover the missing metrics.
+  
+With both the IMDb and OMDb datasets complete and validated, I performed a final join between the two datasets. Because the IMDb and OMDb datasets were built directly from the earlier Criterion dataset, a complex three-way join was not necessary; instead, a standard join between the two sets was used to maintain relational integrity. This resulted in a final, high fidelity dataset of every title currently present in the Criterion Collection, along with additional audience and industry metrics for each title, that was now ready for exploratory analysis.
+
+```{r final_join, eval = FALSE, class.source = "fold-show"}
+criterion_final <- omdb_cleaned %>% 
+  select("movie_id", "imdb_rating", "metascore") %>% 
+  right_join(tmdb_cleaned, by = c("movie_id")) %>% 
+  mutate(director = str_replace_all(director, " &", ",")) %>% 
+  relocate(imdb_rating, metascore, tmdb_id, movie_id, .after = last_col())
+```
+
+```{r data_glimpse}
+criterion %>% 
+  glimpse()
+```
+
+## Reliability Filter
+
+Before proceeding with the exploratory analysis, I implemented a data reliability filter to ensure that the audience rating metrics were statistically sound. By plotting the distribution of TMDb vote counts for titles in the Criterion Collection, I identified a long tail of data with minimal votes that could introduce bias in our analysis.
+
+```{r vote_count_plotting, warning=FALSE}
+# Plot Vote Count
+ggplot(criterion, aes(x = tmdb_vote_count)) +
+  geom_histogram(bins = 50, fill = "steelblue", color = "white") +
+  scale_x_log10() + 
+  geom_vline(xintercept = 50, linetype = "dashed", color = "#e74c3c") +
+  labs(title = "Distribution of TMDb Vote Counts",
+       x = "Vote Count (Log Scale)", y = "Count of Films")
+```
+
+  To mitigate this potential bias, I established a minimum threshold of 50 votes. This filter ensures that each title's rating and popularity metrics are robust and reliable. Furthermore, I averaged the IMDb and TMDb audience scores together into a single Aggregated Audience Rating metric, simplifying our subsequent calculations and providing a more balanced audience representation.
+
+```{r vote_count_filter, class.source = "fold-show"}
+# Apply A 50-Vote Threshold and Aggregate The Two Ratings
+criterion_filtered <- criterion %>% 
+  filter(tmdb_vote_count >= 50) %>%
+  mutate(combined_rating = (imdb_rating + tmdb_vote_avg) / 2)
+```
+
+  Following the application of this filter, the final dataset for analysis consists of:
+  
+```{r summary_of_filtered_titles, echo=FALSE}
+# Create summary data frame
+criterion_filtered_summary <- data.frame(
+  Metric = c("Original Collection Titles", 
+             "Titles Meeting 50-Vote Threshold", 
+             "Titles Removed (Low Consensus)"),
+  Count = c(nrow(criterion), 
+            nrow(criterion_filtered), 
+            nrow(criterion) - nrow(criterion_filtered)))
+
+# Knit table
+criterion_filtered_summary %>%
+  kbl(
+    col.names = c("Dataset Stage", "Title Count"),
+    align = c("l", "c")
+  ) %>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  add_header_above(c("Data Reliability: Post-Filter Title Count" = 2), align = "c") %>% 
+  row_spec(0, bold = T, color = "white", background = "#e74c3c")
+```
+
+With the dataset cleaned, validated, and filtered for statistical reliability, I shift from data preparation to a foundational overview of the collection's primary attributes.
+
+# 3. FOUNDATIONAL OVERVIEW OF THE COLLECTION
+
+## Distribution of Audience Ratings
+
+With our dataset fully prepared for analysis, I generate three different exploratory visualizations to achieve general overview of the titles in the Criterion Collection before honing in on specifics. I begin by creating a histogram of the distribution of our aggregated audience rating metric across the titles:
+
+```{r audience_histogram, warning=FALSE}
+# Plot Histogram of Audience Rating Distribution
+ggplot(criterion_filtered, aes(x = combined_rating)) +
+  geom_histogram(binwidth = 0.2, fill = "steelblue", color = "white") +
+  geom_vline(aes(xintercept = mean(combined_rating, na.rm = TRUE)), 
+             color = "#e74c3c", linetype = "dashed", size = 1) +
+  labs(title = "Criterion Standard: Overall Distribution of Audience Ratings",
+       subtitle = "Dashed red line indicates the collection mean",
+       x = "Average Audience Rating",
+       y = "Frequency (Number of Titles)")
+```
+
+The average audience rating is robust and healthy, with very few titles at all below a 6.5. At the same time, the mean average audience rating is not inordinately skewed towards the high end of the rating scale; while this could be initially surprising, given the collection's reputation, it ultimately makes logical sense given the breadth of titles selected by Criterion, often including titles that are historically important, but not particularly mainstream or audience friendly.
+
+## Geographical Representation
+
+Following this, I create a treemap showcasing the countries of origin amongst the titles in the collection:
+
+```{r country_plot, warning=FALSE}
+# Calculate Country Counts
+country_counts <- criterion_filtered %>%
+  separate_rows(country, sep = ",\\s*") %>%
+  group_by(country) %>%
+  summarise(count = n()) %>%
+  filter(count > 2)
+
+# Plot Country Count
+ggplot(country_counts, aes(area = count, fill = count, label = country)) +
+  geom_treemap() +
+  geom_treemap_text(colour = "white", place = "centre", grow = TRUE) +
+  scale_fill_gradient(low = "#34495e", high = "#e74c3c") +
+  labs(title = "Criterion Distribution by Country",
+       subtitle = "Size indicates number of titles in the filtered collection")
+```
+
+The resulting visualization confirms the assumption that the majority of titles are sourced from the countries with the longest and most storied cinematic histories: USA, France, Japan, Italy, UK, and Germany.
+
+## Sorting Modern Titles by Metascore
+
+Lastly, to compliment the audience metrics, I investigate the Metacritic data values. Metacritic is a website that aggregates film critic reviews into a single value on a scale from 0 to 100. However, while its a great metric to assess the critical consensus around modern films, Metacritic is often missing data for titles released before the year 2000. Since the majority of the titles in the collection are classics and released before 2000, this metric will not be useful for our calculations and analysis focused on the collection as a whole. I decide to generate a table of the top 10 titles with the highest Metacritic value that were released in the 21st century:
+
+```{r modern_table, echo=FALSE}
+# Calculate Top Modern Titles by Metascore
+top_modern <- criterion_filtered %>%
+  filter(year >= 2000) %>%
+  arrange(desc(metascore)) %>%
+  slice_head(n = 10) %>%
+  select(title, director, year, metascore, combined_rating)
+
+# Knit Table of Top Modern Titles
+top_modern %>% 
+  kbl(col.names = c(
+  "Title", "Director", "Year", "Metascore", "Avg Audience Rating")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>% 
+  add_header_above(c(
+    "Top Reviewed 21st Century Criterion Titles" = 5), align = "c") %>% 
+  row_spec(0, bold = T, color = "white", background = "#e74c3c")
+```
+
+Drawing on my professional background in film post-production, the composition of this top 10 aligns with industry consensus for critically acclaimed 21st-century cinema. However, a divergence is visible between the audience ratings and critic ratings for these 10 titles, with the three titles that seem to holding significant cross-over appeal being *Portrait of a Lady on Fire (2019)*, *WALL-E (2008)*, and *Parasite (2019)*.
+
+With a firm comprehension of the dataset's foundational distribution, I proceed to begin analysis on two particular areas of interest: the rating, title count, and popularity of genres and directors in the collection.
+
+# 4. SPECIFIC TARGETS: DEEP DIVE INTO POPULAR GENRES
+
+## Volume vs Rating in Genres
+
+To commence analysis on the genres within the Criterion Collection, I transform the dataset to long data to account for titles with multiple genres values. I unnest the multi-valued genre strings into unique records, group these records by genre, and calculate the average audience rating, total title count, and average vote count to allow for a precise analysis across the distinct genre categories.
+
+```{r genre_analysis}
+# Split Entries with Multiple Genres and Calculate Totals
+genre_stats <- criterion_filtered %>%
+  separate_rows(genre, sep = ",\\s*") %>%
+  group_by(genre) %>%
+  summarise(
+    avg_audience_rating = mean(combined_rating, na.rm = TRUE),
+    total_titles = n(),
+    avg_vote_count = mean(tmdb_vote_count, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(total_titles >= 5)
+```
+
+Subsequently, I generate two stacked bar plots for this genre data: one of the top 10 genres by volume, and one of the top 10 genres by average audience rating:
+
+```{r genre_stacked_bar_plot, fig.width = 12, fig.height = 6}
+# Genre Totals Plot
+genre_total_plot <- genre_stats %>%
+  slice_max(total_titles, n = 10, with_ties = FALSE) %>%
+  ggplot(aes(x = reorder(genre, total_titles), y = total_titles)) +
+  geom_col(fill = "#e74c3c") +
+  coord_flip() + 
+  geom_text(
+    aes(label = total_titles),
+    hjust = 1.2,
+    color = "white",
+    size = 3.5,
+    fontface = "bold") +
+  labs(title = "Genre Volume", x = NULL, y = "Total Titles")
+
+# Genre Ratings Plot
+genre_rating_plot <- genre_stats %>%
+  slice_max(avg_audience_rating, n = 10, with_ties = FALSE) %>%
+  ggplot(aes(
+    x = reorder(genre, avg_audience_rating), y = avg_audience_rating)) +
+  geom_col(fill = "#e74c3c") +
+  coord_flip(ylim = c(6, 8.5)) + 
+  geom_text(
+    aes(label = round(avg_audience_rating, 2)),
+    hjust = 1.2,
+    color = "white",
+    size = 3.5,
+    fontface = "bold") +
+  labs(title = "Genre Reception", x = NULL, y = "Average Audience Rating")
+
+# Genre Popularity Plot
+genre_popularity_plot <- genre_stats %>% 
+  slice_max(avg_vote_count, n = 10, with_ties = FALSE) %>% 
+  ggplot(aes(
+    x = reorder(genre, avg_vote_count), y = avg_vote_count)) +
+  geom_col(fill = "#e74c3c") +
+  coord_flip() + 
+  geom_text(
+    aes(label = round(avg_vote_count, 0)),
+    hjust = 1.2,
+    color = "white",
+    size = 3.5,
+    fontface = "bold") +
+  labs(title = "Genre Popularity", x = NULL, y = "Average Vote Count")
+
+# Combine Genre Plots
+genre_total_plot + genre_rating_plot + genre_popularity_plot +
+  plot_annotation(
+  title = "Criterion Genre Overview")
+```
+
+The top 10 by average reveals only a small range of variance, while the top 10 by volume reveals Drama as an outlier with 972 titles - more than double the count of the subsequent genre, Romance, at 308 titles.
+
+## Identifying Growth Opportunities in Genre Selections
+
+To further bolster my analysis, I generate a quadrant scatterplot using the genre data, with crosshairs determined by mean audience rating and median title count (to account for the Drama outlier). The size of the points are determined by the average vote count. The top left quadrant is highlighted in order to easily identify high-value, low-saturation genres, which would be the prime recommendations for expanding the collection:
+
+```{r genre_quadrant_scatterplot, fig.width = 12, fig.height = 7}
+# Genre Quadrant Scatterplot
+ggplot(genre_stats, aes(
+  x = total_titles, y = avg_audience_rating, size = avg_vote_count)) +
+  geom_point(alpha = 0.55, color = "#e74c3c") + 
+  # Highlight Background of Upper Left Quadrant
+  annotate("rect", xmin = -Inf, xmax = median(genre_stats$total_titles), 
+           ymin = mean(genre_stats$avg_audience_rating), ymax = Inf, 
+           fill = "#fcc7c7", alpha = 0.5) +
+  # Text Adjustments
+  geom_text_repel(
+    aes(label = genre),
+    size = 3.2,
+    box.padding = 0.6,
+    point.padding = 0.4,
+    force = 2,
+    max.overlaps = Inf,
+    fontface = "bold",
+    segment.color = "gray50"
+  ) +
+  # Scale Adjustments
+  scale_x_continuous(breaks = seq(0, 1000, by = 100)) +
+  scale_size_continuous(range = c(2, 12)) +
+  coord_cartesian(ylim = c(6, 8)) +
+  # Set Crosshairs
+  geom_hline(yintercept = mean(genre_stats$avg_audience_rating), linetype = "dashed", color = "gray60") +
+  geom_vline(xintercept = median(genre_stats$total_titles), linetype = "dashed", color = "gray60") +
+  # Labeling
+  labs(
+    title = "Genre Opportunity Map",
+    subtitle = "Size indicates Market Demand (Average Vote Count)",
+    x = "Total Titles in Collection",
+    y = "Avg Audience Score"
+    )
+```
+
+The scatterplot reveals War and History as the clear genres to target, as these are the two highest rated, yet remain relatively underrepresented in volume. The size of the plot points also showcase a healthy popularity metric between the two. Outside of these, the Documentary and Mystery genres also show potential for growth, though the former does indicate a relatively low popularity metric. Surprisingly, while high engagement genres like Family, Animation, and Science Fiction lead in vote count popularity, the average rating for each is relatively low. This could possibly suggest a high initial interest from audiences, but lower subsequent satisfaction, which is key factor in physical media purchasing.
+
+Having identified War, History, and Mystery as potential genres for collection growth, I now shift the focus from thematic categories to the individual: the directors. By applying a similar tactic, I will evaluate which auteurs represent ideal growth points.
+
+# 5. SPECIFIC TARGETS: DEEP DIVE INTO POPULAR DIRECTORS
+
+## Volume vs Rating in Directors
+
+In similar fashion to the genre analysis, I again transform the initial Criterion Collection dataset to long data to account for titles with multiple directors. I unnest the multi-valued director strings into unique records, group these records by director, and calculate the average audience rating, total title count, and average vote count to enable a precise analysis.
+
+```{r director_analysis}
+# Split Entries with Multiple Directors and Calculate Totals
+director_stats <- criterion_filtered %>%
+  separate_rows(director, sep = ",\\s*") %>%
+  group_by(director) %>%
+  summarise(
+    avg_audience_rating = mean(combined_rating, na.rm = TRUE),
+    total_titles = n(),
+    avg_vote_count = mean(tmdb_vote_count, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(total_titles >= 3)
+```
+
+Next, I generate two stacked bar plots for this director data: one of the top 10 directors by volume, and one of the top 10 directors by average audience rating:
+
+```{r director_stacked_bar_plot, fig.width = 12, fig.height = 6}
+# Director Totals Plot
+director_total_plot <- director_stats %>%
+  slice_max(total_titles, n = 10, with_ties = FALSE) %>%
+  ggplot(aes(x = reorder(director, total_titles), y = total_titles)) +
+  geom_col(fill = "#e74c3c") +
+  coord_flip() + 
+  geom_text(
+    aes(label = total_titles),
+    hjust = 1.2,
+    color = "white",
+    size = 3.5,
+    fontface = "bold") +
+  labs(title = "Director Volume", x = NULL, y = "Total Titles")
+
+# Director Ratings Plot
+director_rating_plot <- director_stats %>%
+  slice_max(avg_audience_rating, n = 10, with_ties = FALSE) %>%
+  ggplot(aes(
+    x = reorder(director, avg_audience_rating), y = avg_audience_rating)) +
+  geom_col(fill = "#e74c3c") +
+  coord_flip(ylim = c(6, 8.5)) + 
+  geom_text(
+    aes(label = round(avg_audience_rating, 2)),
+    hjust = 1.2,
+    color = "white",
+    size = 3.5,
+    fontface = "bold") +
+  labs(title = "Director Reception", x = NULL, y = "Average Audience Rating")
+
+# Director Popularity Plot
+director_popularity_plot <- director_stats %>% 
+  slice_max(avg_vote_count, n = 10, with_ties = FALSE) %>% 
+  ggplot(aes(
+    x = reorder(director, avg_vote_count), y = avg_vote_count)) +
+  geom_col(fill = "#e74c3c") +
+  coord_flip() + 
+  geom_text(
+    aes(label = round(avg_vote_count, 0)),
+    hjust = 1.2,
+    color = "white",
+    size = 3.5,
+    fontface = "bold") +
+  labs(title = "Director Popularity", x = NULL, y = "Average Vote Count")
+
+# Combine Director Plots
+director_total_plot + director_rating_plot + director_popularity_plot + plot_annotation(
+  title = "Criterion Director Overview")
+```
+
+Similar to the genre analysis, there is only a relatively small range of variance amongst the top 10 directors by average audience rating. While comparing the top 10 directors by volume, three directors serve as outliers: Ingmar Bergman, Akira Kurosawa, and Agnes Varda, though they are less extreme of outliers compared to the Drama data point in the genre dataset.
+
+## Identifying Growth Opportunities in Director Selections
+
+I proceed to generate a quadrant scatterplot using the director data, with crosshairs determined by mean audience rating and median title count (to account for the three outliers). As before, the size of the points are determined by the average vote count, and the top left quadrant is highlighted to easily identify high-value, low-saturation directors. To maintain visual legibility on the scatterplot, I apply a guideline to annotate only select directors, defined by either possessing an average rating over 7.6 with an average vote count over 500 or a total title count over 20. This isolates the most statistically significant candidates for the final recommendation, as well as the well-represented directors for scale:
+
+```{r director_quadrant_scatterplot, fig.width = 14, fig.height = 8}
+# Define Key Directors to Label on Scatterplot
+director_highlights <- director_stats %>%
+  filter(
+    (avg_audience_rating > 7.6 & avg_vote_count > 500) |            
+    (total_titles > 20))
+
+# Director Quadrant Scatterplot
+ggplot(director_stats, aes(
+  x = total_titles, y = avg_audience_rating, size = avg_vote_count)) +
+  annotate(
+    "rect", xmin = 0, 
+    xmax = median(director_stats$total_titles, na.rm = TRUE), 
+    ymin = mean(director_stats$avg_audience_rating, na.rm = TRUE),
+    ymax = 8.5, fill = "#fcc7c7", alpha = 0.5) +
+  geom_hline(
+    yintercept = mean(director_stats$avg_audience_rating, na.rm = TRUE), 
+    linetype = "dashed", color = "gray60") +
+  geom_vline(
+    xintercept = median(director_stats$total_titles, na.rm = TRUE), 
+    linetype = "dashed", color = "gray60") + 
+  geom_vline(
+    xintercept = 20, linetype = "dashed", color = "blue") +
+  annotate(
+    "text", 
+    x = 21, y = 6.3,
+    label = "ESTABLISHED CATALOGS", 
+    angle = 90,
+    vjust = 0, 
+    color = "gray50", 
+    size = 3.5, 
+    fontface = "bold.italic") +
+  geom_point(
+    alpha = 0.3, color = "black", fill = "#e74c3c", shape = 21, stroke = 0.5) + 
+  geom_text_repel(
+    data = director_highlights,
+    aes(label = director),
+    size = 4,
+    fontface = "bold",
+    box.padding = 1.5,
+    point.padding = 0.5,
+    force = 10,
+    segment.color = "gray50",
+    segment.alpha = 0.6,
+    max.overlaps = Inf,     
+    min.segment.length = 0) +
+  scale_size_continuous(range = c(2, 16)) +
+  scale_x_continuous(breaks = seq(0, 40, by = 5)) +
+  coord_cartesian(ylim = c(6, 8.5)) + 
+  labs(
+    title = "Director Strategic Opportunity Map",
+    subtitle = "Highlighting High-Prestige / Low-Volume Catalogs for Acquisition",
+    x = "Total Titles in Collection",
+    y = "Average Audience Score",
+    size = "Popularity")
+```
+
+The scatterplot reveals Bong Joon-ho and Billy Wilder as clear potential directors to target, as these auteurs are firmly positioned within the highly rated but underrepresented top left quadrant, and also boast strong popularity metrics. Outside of these, Fritz Lang, Peter Bogdanovich, and Alain Resnais all also appear in the top left quadrant and show potential for growth, with Lang slightly surpassing the latter two on both popularity and average rating. Furthermore, the data suggests a "volume-quality" trade-off when selecting more "deep-cut" titles from within a director's filmography. Directors with large, comprehensive boxsets, including Bergman, Varda, and Kurosawa, show ratings close to the collection's mean, indicating that the acquisition of non-canonical or 'completionist' titles may lead to a regression toward the mean for a director's average audience rating.
+
+Having identified Bong Joon-ho, Billy Wilder, and Fritz Lang as candidates who balance prestige with popularity, as well as containing iconic titles yet to be acquired by Criterion, I am now fully prepared to synthesize my analysis findings into final strategic recommendations for the collection.
+
+# 6. CONCLUSIONS AND RECOMMENDATIONS
+
+## Strategic Acquisitions by Genre
+
+Utilizing the analysis on genre-based expansion to the Criterion Collection, and weighing our Aggregated Audience Rating, market scarcity and technical necessity, I recommend the following acquisitions:
+
+```{r genre_recommendations, echo=FALSE}
+# Create Genre Recommendation Tibble
+genre_recommendations <- tribble(
+  ~"Genre", ~"Justification", ~"Recommended Titles",
+  
+  "War", 
+  "Average popularity (780 avg. votes), highest audience rating (7.52), low current collection volume (75 titles)", 
+  "Incendies (2010), Das Boot (1981), Underground (1995)",
+  
+  "History", 
+  "Average popularity (688 avg. votes), second highest audience rating (7.47), low current collection volume (88 titles)",
+  "To Live (1994), Judgment at Nuremberg (1961), Quo Vadis Aida? (2020)",
+  
+  "Mystery",
+  "High popularity (1070 avg. votes), above average audience rating (7.28), relatively low current collection volume (94 titles)",
+  "Memento (2000), Cache (2005), Laura (1944)"
+)
+
+# Create Genre Recommendation Table
+kbl(genre_recommendations) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  add_header_above(c("Acquisition Strategy" = 3), align = "c") %>% 
+  row_spec(0, bold = T, color = "white", background = "#e74c3c")
+```
+
+### Genre: War
+
+For the War genre, I selected three titles that are highly rated by audiences, with all currently residing in Letterboxd's Top 150 films of all time. *Incendies (2010)* is the highest rated film by one of the most well known and acclaimed filmmakers working today, Denis Villeneuve, and yet is relegated to a legacy 2K transfer on a standard issue Blu-ray. *Das Boot (1981)* is a popular and highly rated classic, yet similarly is relegated to an antiquated standard Blu-ray release that also fails to include the definitive mini-series cut of the film. *Underground (1995)*, while less of an immediately recognizable title, is just as highly rated as the aforementioned two; it was released a few years ago on Blu-ray by market peer Kino Lorber, but has since gone out-of-print, suggesting their rights to the title have likely expired.
+
+### Genre: History
+
+With the History genre, I applied a similar rationale. *Judgment at Nuremberg (1961)* is an iconic classic, and had a prior Blu-ray release by Kino Lorber, but that release has been out-of-print for some time. *To Live (1994)* is a beloved and devastating film, and from a director already present in the collection, but has never been released on Blu-ray or 4K UHD in the United States. *Quo Vadis Aida? (2020)* is a more recent title, but is one of the highest rated titles of the decade on IMDb and Letterboxd; yet, it has never been given a physical media release of any kind in this country.
+
+### Genre: Mystery
+
+For the Mystery genre, I selected three equally iconic titles, all from directors with a title already present in the Criterion Collection. *Memento (2000)* was the breakout hit of Christopher Nolan, whose filmography has defined the modern prestige blockbuster, but is one of his only titles to have never been released on 4K UHD. *Cache (2005)* is a chilling modern masterpiece from Michael Haneke, highly rated by fans, yet has never received a Blu-ray or 4K UHD release in the United States. *Laura (1944)* is one of the most famous film noirs of all time by Otto Preminger, but has only been released on an out-of-print Blu-ray which sells for high prices on the secondhand market.
+
+## Strategic Acquisitions by Director
+
+While genre-based expansion addresses thematic gaps in the collection, a director-centric approach identifies the auteurs whose individual bodies of work drive the highest Aggregated Audience Rating. Following a similar logic of market scarcity and technical necessity, I recommend the following acquisitions:
+
+```{r director_recommendations, echo=FALSE}
+# Create Director Recommendation Tibble
+director_recommendations <- tribble(
+  ~"Director", ~"Justification", ~"Recommended Titles",
+  
+  "Bong Joon-ho", 
+  "Highest popularity (9.8K avg. votes), high audience rating (7.96), low current collection volume (3 titles)", 
+  "Mother (2009), The Host (2006), Snowpiercer (2013)",
+  
+  "Billy Wilder", 
+  "High popularity (2.2K avg. votes), second highest audience rating (8.11), low current collection volume (3 titles)",
+  "Witness for the Prosecution (1957), The Lost Weekend (1945), 
+  The Seven Year Itch (1955)",
+  
+  "Fritz Lang",
+  "Above average popularity (862 avg. votes), high audience rating (7.69), relatively low current collection volume (4 titles)",
+  "Dr. Mabuse Trilogy (1922-1960), The Woman in the Window (1944), Fury (1936)"
+)
+
+# Create Director Recommendation Table
+kbl(director_recommendations) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  add_header_above(c("Acquisition Strategy" = 3), align = "c") %>% 
+  row_spec(0, bold = T, color = "white", background = "#e74c3c")
+```
+
+### Director: Bong Joon-ho
+
+Bong Joon-ho is a modern master, effectively bridging the gap between arthouse world cinema and mainstream American genre filmmaking. Despite his high level of popularity, quite possibly being the most famous international director working today, he has a relatively small filmography. Yet, amongst his smaller filmography, two of his most iconic and beloved titles have never been released on 4K UHD or by a boutique Blu-ray label, *Mother (2009)* and *The Host (2006)*, and another iconic title has received a 4K UHD release that is no longer in-print, *Snowpiercer (2013)*. These all seem to be a natural fit for the Criterion Collection. 
+
+### Director: Billy Wilder
+
+Billy Wilder is one of the auteur titans of classic Hollywood cinema. The majority of his titles that are not already licensed by Criterion are currently in-print from Kino Lorber, however, most of these releases are decades old 2K transfers and are in need of a new 4K restoration and release. Of these, I recommend *Witness for the Prosecution (1957)*, one of his most popular and highly rated titles, and *The Lost Weekend (1945)*, one of Wilder's two titles to win the Academy Award for Best Picture. There is precedent for Criterion releasing a Billy Wilder title that Kino Lorber had released prior: *Some Like It Hot (1959)* was released by Kino on 4K UHD in 2022, only for their rights to expire and for Criterion to release their own 4K of the title in 2025. I would also recommend Criterion look into acquiring the title *The Seven Year Itch (1955)*, given it is fairly popular, contains one of Hollywood's most iconic images in Marilyn Monroe in her white skirt, and has no current boutique release.
+
+### Director: Fritz Lang
+
+While Fritz Lang may have a lower popularity metric than Wilder or Bong, his popularity metric still is fairly robust, outranking multiple modern directors and being the third highest director to originate from the silent era, only trailing Charlie Chaplin and Alfred Hitchcock. Lang has a deep filmography, spanning from silent German epics to American noir, and while many of his iconic titles have been already licensed by Crierion and Kino Lorber, there are still quite a few currently unavailable or unreleased. *Dr. Mabuse, the Gambler (1922)*, a fusion of both silent epic filmmaking and noir, remains one of Lang's most well known silent titles. It was released on Blu-ray a decade ago by Kino, but that release has long been out-of-print. As Criterion themselves have released its sequel, *The Testament of Dr. Mabuse (1933)*, in the past on DVD, there's a great opportunity to release a Blu-ray boxset of the two titles together, along with the third Mabuse Trilogy entry, *The Thousand Eyes of Dr. Mabuse (1960)*. Alongside a potential Mabuse Boxset, two of his best noirs, *The Woman in the Window (1944)* and *Fury (1936)*, remain out-of-print from Kino and Warner Archive respectively, and would be ideal additions to the collections as 4K UHD upgrades.
+
+By synthesizing algorithmic unnesting, statistical reliability thresholds, and deep domain expertise in film history, this analysis provides a data-driven roadmap for future Criterion Collection acquisitions. These recommendations ensure that as the collection expands, it continues to balance its legacy of global prestige with the evolving demands of the modern home cinema audience and cinephiles everywhere.
+
+# 7. DATA SOURCES AND REFERENCES
+
+ - **Initial Master List**: [The Complete Criterion Collection](https://letterboxd.com/jbutts15/list/the-complete-criterion-collection/)
+(via Letterboxd, Curated by [Josh](https://letterboxd.com/jbutts15/), Updated March 16, 2026)
+
+ - **Supplementary Metadata**: Aggregated via the [TMDb](https://developer.themoviedb.org/docs/getting-started) and [OMDb](https://www.omdbapi.com/) APIs, using the 'httr' and 'jsonlite' R packages.
+
+ - **Market Intelligence**: Release history, transfer specifications, and rights-status verified via [Blu-ray.com](https://www.blu-ray.com/).
+ 
+ - **Criterion Collection**: Official spine data and catalog verification via [Criterion.com](https://www.criterion.com/).
+ 
