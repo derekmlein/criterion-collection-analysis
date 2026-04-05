@@ -12,7 +12,7 @@ This project utilizes **R** for data engineering and **Tableau** for strategic v
 ---
 
 ## 📊 Interactive Dashboard
-[![Dashboard](Images/Derek%20Lein%20Criterion%20Collection%20Analysis%20Tableau%20Dashboard.png)](https://public.tableau.com/views/CriterionCollectionAnalysis_17753340053120/TheCriterionStandardAData-DrivenStrategyforCollectionExpansion?:language=en-US&:sid=&:redirect=auth&:display_count=n&:origin=viz_share_link:showVizHome=no)
+[![Dashboard](Images/Derek%20Lein%20Criterion%20Collection%20Analysis%20Tableau%20Dashboard.png)](https://public.tableau.com/views/CriterionCollectionAnalysis_17753340053120/TheCriterionStandardAData-DrivenStrategyforCollectionExpansion?:language=en-US&:sid=&:redirect=auth&:display_count=n&:origin=viz_share_link&:showVizHome=no)
 *> Click the image above to view the interactive dashboard on Tableau Public.*
 
 ---
@@ -38,8 +38,9 @@ This project utilizes **R** for data engineering and **Tableau** for strategic v
 ---
 
 ## 📂 Repository Structure
+* `criterion_analysis_notebook.Rmd`: The full technical report.
+  * [**View the Full Technical Analysis & R Notebook**](https://htmlpreview.github.io/?https://github.com/derekmlein/criterion-collection-analysis/blob/main/criterion_analysis_notebook.html)
 * `01_criterion_cleaning.R`: Script for merging disparate film databases and handling null values.
-* `02_criterion_analysis_notebook.Rmd`: The full technical report.
-* `03_criterion_tableau_exports.R`: Prepares long-format CSVs for Tableau optimization.
+* `02_criterion_tableau_exports.R`: Prepares long-format CSVs for Tableau optimization.
 
 ---
