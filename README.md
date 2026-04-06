@@ -39,7 +39,7 @@ This project utilizes **R** for data engineering and **Tableau** for strategic v
 
 ## 📂 Repository Structure
 * `criterion_analysis_notebook.Rmd`: The full technical report.
-  * [**View the Full Technical Analysis & R Notebook**](https://htmlpreview.github.io/?https://github.com/derekmlein/criterion-collection-analysis/blob/main/criterion_analysis_notebook.html)
+  * [**View the Full Technical Analysis & R Notebook**](https://derekmlein.github.io/criterion-collection-analysis/criterion_analysis_notebook.html)
 * `01_criterion_cleaning.R`: Script for merging disparate film databases and handling null values.
 * `02_criterion_tableau_exports.R`: Prepares long-format CSVs for Tableau optimization.
 
