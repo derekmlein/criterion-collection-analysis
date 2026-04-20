@@ -12,7 +12,7 @@ This project utilizes **R** for data engineering and **Tableau** for strategic v
 ---
 
 ## 📊 Tableau Dashboard
-[![Dashboard](Images/Derek%20Lein%20Criterion%20Collection%20Analysis%20Tableau%20Dashboard%20v02.png)](https://public.tableau.com/views/TheCriterionStandardAData-DrivenStrategyforCollectionExpansion_v02/TheCriterionStandardAData-DrivenStrategyforCollectionExpansion?:showVizHome=no)
+[![Dashboard](Images/Derek%20Lein%20Criterion%20Collection%20Analysis%20Tableau%20Dashboard%20v03.png)](https://public.tableau.com/views/TheCriterionStandardAData-DrivenStrategyforCollectionExpansion_v03/TheCriterionStandardAData-DrivenStrategyforCollectionExpansion?:showVizHome=no)
 *> Click the image above to view the interactive dashboard on Tableau Public.*
 
 ---
